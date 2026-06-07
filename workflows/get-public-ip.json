@@ -1,0 +1,89 @@
+{
+  "name": "Get Public IP",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://ifconfig.me/ip",
+        "options": {}
+      },
+      "id": "0a00a7ec-9610-4dd8-964e-cdbcf2660112",
+      "name": "Get Public IP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst ip = typeof data === 'string' ? data.trim() : (data.body || data.data || JSON.stringify(data)).toString().trim();\nreturn [{ json: { output: \"Your public IP address is: \" + ip } }];"
+      },
+      "id": "20113062-96c3-4f05-a6e8-8e9c37555b25",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "public": true,
+        "options": {
+          "responseMode": "lastNode"
+        }
+      },
+      "id": "d2155ab3-50a4-44cc-8c85-694e36328fac",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        224,
+        0
+      ],
+      "webhookId": "39e07e50-2f13-4b6f-baa8-189ba351555b"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Public IP": {
+      "main": [
+        [
+          {
+            "node": "Format Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Public IP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "c6cc64f6-f476-4f02-9a73-19d350a945f6",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "488742ab84b752150bb40f29b5842302851aea38685d231952c53679b09c8a83"
+  },
+  "nodeGroups": [],
+  "id": "1JpiUvxeUBN0jvv6",
+  "tags": []
+}

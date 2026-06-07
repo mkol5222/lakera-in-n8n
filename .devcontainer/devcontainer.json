@@ -4,5 +4,10 @@
 	"features": {
 		"ghcr.io/devcontainers/features/docker-in-docker:2": {}
 	},
-	"postStartCommand": "bash /workspaces/lakera-in-n8n/start-n8n.sh"
+	"postStartCommand": "bash /workspaces/lakera-in-n8n/start-n8n.sh",
+	"portsAttributes": {
+		"5678": {
+			"onAutoForward": "ignore"
+		}
+	}
 }

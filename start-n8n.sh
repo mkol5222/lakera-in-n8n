@@ -23,6 +23,37 @@ opencode_mcp_name="${opencode_mcp_name:-n8n-mcp}"
 cloudflared_pid=""
 cloudflared_bin=""
 
+# ──────────────────────────────────────────────────
+#  Color & icon helpers
+# ──────────────────────────────────────────────────
+if [ -t 1 ]; then
+    BOLD='\033[1m'
+    DIM='\033[2m'
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[0;33m'
+    BLUE='\033[0;34m'
+    MAGENTA='\033[0;35m'
+    CYAN='\033[0;36m'
+    NC='\033[0m' # No Color
+    CHECK="${GREEN}✅${NC}"
+    CROSS="${RED}❌${NC}"
+    WARN="${YELLOW}⚠️${NC}"
+    INFO="${BLUE}ℹ️${NC}"
+    TOOL="${CYAN}🔧${NC}"
+    KEY="${YELLOW}🔑${NC}"
+    WRITE="${BLUE}📝${NC}"
+    DOWNLOAD="${BLUE}📥${NC}"
+    ROCKET="${MAGENTA}🚀${NC}"
+    GLOBE="${CYAN}🌐${NC}"
+    CLOCK="${BLUE}⏳${NC}"
+    BROOM="${DIM}🧹${NC}"
+    TRASH="${YELLOW}🗑️${NC}"
+else
+    BOLD=''; DIM=''; RED=''; GREEN=''; YELLOW=''; BLUE=''; MAGENTA=''; CYAN=''; NC=''
+    CHECK=''; CROSS=''; WARN=''; INFO=''; TOOL=''; KEY=''; WRITE=''; DOWNLOAD=''; ROCKET=''; GLOBE=''; CLOCK=''; BROOM=''; TRASH=''
+fi
+
 ensure_node_with_nvm() {
     export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 
@@ -33,14 +64,14 @@ ensure_node_with_nvm() {
     fi
 
     if command -v node &> /dev/null; then
-        echo "node already installed: $(node -v)"
+        echo -e "  ${CHECK} Node already installed: $(node -v)"
         if command -v npm &> /dev/null; then
-            echo "npm version: $(npm -v)"
+            echo -e "  ${CHECK} npm version: $(npm -v)"
         fi
         return
     fi
 
-    echo "node not found. installing nvm and node lts (${node_lts_version})..."
+    echo -e "  ${TOOL} Node not found — installing nvm and Node LTS (v${node_lts_version})..."
 
     if [ ! -s "$NVM_DIR/nvm.sh" ]; then
         curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.4/install.sh | bash
@@ -51,19 +82,19 @@ ensure_node_with_nvm() {
     nvm install "$node_lts_version"
     nvm use "$node_lts_version" >/dev/null
 
-    echo "node version: $(node -v)"
-    echo "npm version: $(npm -v)"
+    echo -e "  ${CHECK} Node version: $(node -v)"
+    echo -e "  ${CHECK} npm version: $(npm -v)"
 }
 
 ensure_opencode() {
     export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH"
 
     if command -v opencode &> /dev/null; then
-        echo "opencode already installed: $(opencode --version 2>/dev/null || echo available)"
+        echo -e "  ${CHECK} Opencode already installed: $(opencode --version 2>/dev/null || echo available)"
         return
     fi
 
-    echo "opencode not found. installing..."
+    echo -e "  ${TOOL} Opencode not found — installing..."
     curl -fsSL https://opencode.ai/install | bash
 
     # Some installers place binaries in user-local paths not present in non-login shells.
@@ -77,10 +108,10 @@ ensure_opencode() {
     fi
 
     if command -v opencode &> /dev/null; then
-        echo "opencode installed successfully: $(opencode --version 2>/dev/null || echo available)"
+        echo -e "  ${CHECK} Opencode installed successfully: $(opencode --version 2>/dev/null || echo available)"
     else
-        echo "error: opencode installation finished but command is still not available in PATH."
-        echo "try opening a new shell, or add ~/.local/bin to your PATH."
+        echo -e "  ${CROSS} Opencode installation finished but command is still not available in PATH."
+        echo -e "  ${INFO} Try opening a new shell, or add ~/.local/bin to your PATH."
         exit 1
     fi
 }
@@ -111,7 +142,7 @@ NODE
 )
 
         if [ -n "$n8n_mcp_access_token" ]; then
-                echo "loaded n8n MCP token from $config_path"
+                echo -e "  ${INFO} Loaded n8n MCP token from $config_path"
         fi
 }
 
@@ -120,11 +151,11 @@ write_opencode_mcp_config() {
                 local mcp_url="${base_url%/}/mcp-server/http"
 
         if [ -z "$n8n_mcp_access_token" ]; then
-                echo "n8n_mcp_access_token not set. skipping opencode MCP config update."
+                echo -e "  ${WARN} n8n_mcp_access_token not set — skipping opencode MCP config update."
                 return
         fi
 
-        echo "writing opencode MCP config to $opencode_config_path"
+        echo -e "  ${WRITE} Writing opencode MCP config to $opencode_config_path"
 
         mkdir -p "$(dirname "$opencode_config_path")"
 
@@ -174,11 +205,11 @@ write_mcp_config() {
         local mcp_url="${base_url%/}/mcp-server/http"
 
         if [ -z "$n8n_mcp_access_token" ]; then
-                echo "n8n_mcp_access_token not set. skipping .mcp.json update."
+                echo -e "  ${WARN} n8n_mcp_access_token not set — skipping .mcp.json update."
                 return
         fi
 
-        echo "writing MCP config to $mcp_config_path"
+        echo -e "  ${WRITE} Writing MCP config to $mcp_config_path"
 
         mkdir -p "$(dirname "$mcp_config_path")"
 
@@ -219,21 +250,21 @@ NODE
 }
 
 install_cloudflared() {
-    echo "cloudflared not found. installing..."
+    echo -e "  ${TOOL} cloudflared not found — installing..."
     os=$(uname -s | tr '[:upper:]' '[:lower:]')
     arch=$(uname -m)
     case "$arch" in
         x86_64|amd64) arch="amd64" ;;
         aarch64|arm64) arch="arm64" ;;
         armv7l|arm) arch="arm" ;;
-        *) echo "error: unsupported architecture: $arch"; exit 1 ;;
+        *) echo -e "  ${CROSS} Unsupported architecture: $arch"; exit 1 ;;
     esac
     case "$os" in
         linux) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" ;;
         darwin) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${arch}" ;;
-        *) echo "error: unsupported os: $os"; exit 1 ;;
+        *) echo -e "  ${CROSS} Unsupported OS: $os"; exit 1 ;;
     esac
-    echo "downloading cloudflared from $url"
+    echo -e "  ${DOWNLOAD} Downloading cloudflared from $url"
     if [ -w /usr/local/bin ]; then
         curl -sL "$url" -o /usr/local/bin/cloudflared
         chmod +x /usr/local/bin/cloudflared
@@ -248,7 +279,7 @@ install_cloudflared() {
         chmod +x ./cloudflared
         cloudflared_bin="./cloudflared"
     fi
-    echo "cloudflared installed successfully."
+    echo -e "  ${CHECK} cloudflared installed successfully."
 }
 
 if command -v cloudflared &> /dev/null; then
@@ -261,8 +292,8 @@ ensure_node_with_nvm
 ensure_opencode
 
 if [ -n "${N8N_MCP_TOKEN:-}" ]; then
-    echo "warning: N8N_MCP_TOKEN is not a documented n8n MCP environment variable and will not be used."
-    echo "n8n only documents N8N_MCP_MANAGED_BY_ENV and N8N_MCP_ACCESS_ENABLED for instance-level MCP settings."
+    echo -e "  ${WARN} N8N_MCP_TOKEN is not a documented n8n MCP environment variable and will not be used."
+    echo -e "  ${INFO} n8n only documents N8N_MCP_MANAGED_BY_ENV and N8N_MCP_ACCESS_ENABLED for instance-level MCP settings."
 fi
 
 load_n8n_mcp_access_token_from_config "$opencode_config_path"
@@ -273,30 +304,30 @@ ensure_n8n_owner_password_hash() {
         return
     fi
 
-    echo "generating n8n owner password hash..."
+    echo -e "  ${KEY} Generating n8n owner password hash..."
     n8n_owner_password_hash=$(docker run --rm --entrypoint node "$n8n_docker_image" -e 'const bcrypt=require("/usr/local/lib/node_modules/n8n/node_modules/bcryptjs"); const pwd=process.argv[1]; if(!pwd){process.exit(1)}; process.stdout.write(bcrypt.hashSync(pwd, 10));' "$n8n_owner_password")
 
     if [ -z "$n8n_owner_password_hash" ]; then
-        echo "error: failed to generate n8n owner password hash"
+        echo -e "  ${CROSS} Failed to generate n8n owner password hash"
         exit 1
     fi
 }
 
 cleanup() {
-    echo "cleaning up..."
+    echo -e "  ${BROOM} Cleaning up..."
     docker stop "$docker_container_name" >/dev/null 2>&1 || true
     docker rm "$docker_container_name" >/dev/null 2>&1 || true
     if [ -n "$cloudflared_pid" ] && kill -0 "$cloudflared_pid" 2>/dev/null; then
         kill "$cloudflared_pid" 2>/dev/null || true
     fi
     pkill -f "$cloudflared_bin tunnel --url http://localhost:$n8n_docker_port" >/dev/null 2>&1 || true
-    echo "cleanup complete."
+    echo -e "  ${CHECK} Cleanup complete."
 }
 
 remove_existing_container() {
     existing_container_id=$(docker ps -aq -f "name=^/${docker_container_name}$")
     if [ -n "$existing_container_id" ]; then
-        echo "removing existing container: $docker_container_name ($existing_container_id)"
+        echo -e "  ${TRASH} Removing existing container: $docker_container_name ($existing_container_id)"
         docker stop "$docker_container_name" >/dev/null 2>&1 || true
         docker rm "$docker_container_name" >/dev/null 2>&1 || true
     fi
@@ -305,19 +336,19 @@ remove_existing_container() {
 trap cleanup exit int term
 
 if ! docker info >/dev/null 2>&1; then
-    echo "error: docker is not running."
+    echo -e "  ${CROSS} Docker is not running."
     exit 1
 fi
 
 ensure_n8n_owner_password_hash
 
-echo "starting cloudflare tunnel..."
+echo -e "  ${GLOBE} Starting Cloudflare tunnel..."
 tmp_log=$(mktemp)
 $cloudflared_bin tunnel --url "http://localhost:$n8n_docker_port" --loglevel "$cloudflared_log_level" >"$tmp_log" 2>&1 &
 cloudflared_pid=$!
 
 tunnel_url=""
-echo "waiting for tunnel url..."
+echo -e "  ${CLOCK} Waiting for tunnel URL..."
 for i in $(seq 1 30); do
     tunnel_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$tmp_log" | head -1)
     if [ -n "$tunnel_url" ]; then
@@ -329,11 +360,11 @@ done
 rm -f "$tmp_log"
 
 if [ -z "$tunnel_url" ]; then
-    echo "error: failed to get tunnel url from cloudflared."
+    echo -e "  ${CROSS} Failed to get tunnel URL from cloudflared."
     exit 1
 fi
 
-echo "tunnel url: $tunnel_url"
+echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
 
 n8n_host=$(echo "$tunnel_url" | sed -E -e 's|^https?://||')
 
@@ -342,7 +373,7 @@ docker volume create "$n8n_volume_name" >/dev/null 2>&1 || true
 write_opencode_mcp_config "$tunnel_url"
 write_mcp_config "$tunnel_url"
 
-echo "starting n8n docker container..."
+echo -e "  ${ROCKET} Starting n8n Docker container..."
 remove_existing_container
 docker run -d \
     --name "$docker_container_name" \
@@ -362,22 +393,50 @@ docker run -d \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
 
+# ──────────────────────────────────────────────────
+#  Summary banner
+# ──────────────────────────────────────────────────
 echo ""
-echo "n8n is running at: $tunnel_url"
-echo "owner login: $n8n_owner_email / $n8n_owner_password"
-echo "n8n data dir: $n8n_data_dir (docker volume: $n8n_volume_name)"
+echo -e "  ${BOLD}${GREEN}╔══════════════════════════════════════════════════╗${NC}"
+echo -e "  ${BOLD}${GREEN}║         🚀  N8N  INSTANCE  READY                 ║${NC}"
+echo -e "  ${BOLD}${GREEN}╚══════════════════════════════════════════════════╝${NC}"
+echo ""
+
+echo -e "  ${BOLD}${CYAN}🔗  URL${NC}"
+echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+echo -e "  ${tunnel_url}"
+echo ""
+
+echo -e "  ${BOLD}${YELLOW}🔑  OWNER  LOGIN${NC}"
+echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+printf "  ${BOLD}%-18s${NC} %s\n" "Email:"   "$n8n_owner_email"
+printf "  ${BOLD}%-18s${NC} %s\n" "Password:" "$n8n_owner_password"
+echo ""
+
+echo -e "  ${BOLD}${MAGENTA}⚙️  INSTANCE  INFO${NC}"
+echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+printf "  ${BOLD}%-22s${NC} %s\n" "Docker Container:" "$docker_container_name"
+printf "  ${BOLD}%-22s${NC} %s\n" "Data Volume:"      "$n8n_volume_name"
 if [ -n "$n8n_mcp_access_token" ]; then
-    echo "opencode MCP config: $opencode_config_path"
-    echo "generic MCP config: $mcp_config_path"
-    echo "opencode MCP server: $opencode_mcp_name -> ${tunnel_url%/}/mcp-server/http"
-    echo "note: n8n_mcp_access_token updates client config only; n8n must already know this token."
-else
-    echo "set n8n_mcp_access_token to also write MCP client config into $opencode_config_path and $mcp_config_path"
-    echo "generate the MCP access token once in n8n UI at Settings > Instance-level MCP > Connection details > Access Token"
+    printf "  ${BOLD}%-22s${NC} %s\n" "MCP Server:" "${tunnel_url%/}/mcp-server/http"
 fi
-echo "docker container: $docker_container_name"
-echo "press ctrl+c to stop everything."
 echo ""
+
+echo -e "  ${BOLD}${RED}🛑  STOP${NC}"
+echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+echo -e "  Press ${BOLD}${RED}Ctrl+C${NC} to stop everything."
+echo ""
+
+# Uncomment the lines below for additional MCP / config details on first run:
+# echo -e "  ${BOLD}${BLUE}📁  CONFIG  FILES${NC}"
+# echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
+# printf "  %-22s %s\n" "opencode config:" "$opencode_config_path"
+# printf "  %-22s %s\n" "generic MCP config:" "$mcp_config_path"
+# echo ""
+# if [ -z "$n8n_mcp_access_token" ]; then
+#   echo -e "  ${YELLOW}💡  Tip:${NC} Set ${BOLD}n8n_mcp_access_token${NC} to auto-write MCP client configs."
+#   echo ""
+# fi
 
 while true; do
     sleep 1

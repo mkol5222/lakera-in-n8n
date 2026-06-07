@@ -17,7 +17,10 @@
 7. N8N instance access information is also stored in newly created file [N8N-ACCESS.md](N8N-ACCESS.md) in the root of the repository.
 8. Login to your N8N instance using the **credentials** from the terminal output or from the [N8N-ACCESS.md](N8N-ACCESS.md) file.
 9. You can now start using N8N to learn about Lakera AI integration.
-10. Here is table of bundled workflows to get you started by import from the [workflows](workflows) folder in this repository:
+
+## Workflows to import using the Raw URL
+
+Here is table of bundled workflows to get you started by import from the [workflows](workflows) folder in this repository:
 
     | Workflow Name | Description | Raw URL (copy to import) |
     | --- | --- | --- |

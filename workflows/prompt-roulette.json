@@ -1,0 +1,196 @@
+{
+  "name": "Prompt Roulette V2",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "https://datasets-server.huggingface.co/size?dataset=OpenSafetyLab%2FSalad-Data",
+        "options": {}
+      },
+      "id": "b25c5a72-47c8-43bf-b0dd-243f04a5d8be",
+      "name": "Get Split Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        304,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Get Split Info').first().json;\nconst config = data.size?.configs?.find(c => c.config === 'base_set');\nconst total = config?.num_rows ?? 0;\nif (!total) {\n  return [{ json: { offset: 0, total: 0, error: 'No rows found for base_set' } }];\n}\nconst offset = Math.floor(Math.random() * total);\nreturn [{ json: { offset, total, config: 'base_set', split: 'train' } }];"
+      },
+      "id": "3d2d626e-4544-4d66-8813-0ed783f2c590",
+      "name": "Pick Random Offset",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://datasets-server.huggingface.co/rows?dataset=OpenSafetyLab%2FSalad-Data&config=base_set&split=train&offset={{ $json.offset }}&length=1",
+        "options": {}
+      },
+      "id": "9d522886-20e3-4615-b7c3-db5d16b300e1",
+      "name": "Fetch Random Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        784,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Fetch Random Prompt').first().json;\nconst row = data.rows?.[0]?.row;\nif (!row) {\n  return [{ json: { error: 'No prompt found in dataset.' } }];\n}\n\nconst promptText = row.question || row.augq || row.daugq || row.mcq || JSON.stringify(row);\nconst source = row.source || row.method || row.dmethod || '—';\nconst cat1 = row['1-category'] || '—';\nconst cat2 = row['2-category'] || '—';\nconst cat3 = row['3-category'] || '—';\n\n// Return both the prompt metadata AND the Lakera Guard API payload\nreturn [{\n  json: {\n    prompt: promptText,\n    source: source,\n    category1: cat1,\n    category2: cat2,\n    category3: cat3,\n    // Lakera Guard expects: { messages: [{ role, content }], breakdown: true }\n    messages: [{ role: 'user', content: promptText }],\n    breakdown: true,\n  }\n}];"
+      },
+      "id": "187e71f3-c519-498e-a477-032023614b37",
+      "name": "Extract Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "var items = $input.all();\n\n// Grab the prompt metadata from earlier in the workflow\nvar promptInfo = $('Extract Prompt').first().json;\nvar promptText = promptInfo.prompt || 'Unknown';\nvar source = promptInfo.source || '—';\nvar cat1 = promptInfo.category1 || '—';\nvar cat2 = promptInfo.category2 || '—';\nvar cat3 = promptInfo.category3 || '—';\n\n// Build classification tree display\nvar classificationLine = '';\nif (cat1 !== '—' || cat2 !== '—' || cat3 !== '—') {\n  classificationLine = '\\n\\n**Classification:**\\n';\n  if (cat1 !== '—') classificationLine += '  ▶ ' + cat1 + '\\n';\n  if (cat2 !== '—') classificationLine += '    ▶ ' + cat2 + '\\n';\n  if (cat3 !== '—') classificationLine += '      ▶ ' + cat3 + '\\n';\n}\n\nvar results = [];\nfor (var i = 0; i < items.length; i++) {\n  var data = items[i].json;\n  var flagged = data.flagged === true;\n\n  // Build detection details from breakdown\n  var detections = '';\n  var riskScore = 'None';\n  if (data.breakdown && Array.isArray(data.breakdown)) {\n    var detected = [];\n    var scores = [];\n    for (var k = 0; k < data.breakdown.length; k++) {\n      var b = data.breakdown[k];\n      if (b.detected === true) { detected.push(b); }\n      if (typeof b.risk_score === 'number') { scores.push(b.risk_score); }\n    }\n\n    if (detected.length > 0) {\n      var lines = [];\n      for (var j = 0; j < detected.length; j++) {\n        var d = detected[j];\n        var line = '• [' + (d.detector_id || d.detector_type || 'unknown') + ']';\n        if (d.detected_class) { line = line + ' - ' + d.detected_class; }\n        if (typeof d.risk_score === 'number') {\n          var pct = Math.round(d.risk_score * 100);\n          line = line + ' (confidence: ' + pct + '%)';\n        }\n        lines.push(line);\n      }\n      detections = '\\n\\n**Triggered Detectors:**\\n' + lines.join('\\n');\n    }\n\n    if (scores.length > 0) {\n      var maxScore = Math.max.apply(null, scores);\n      if (maxScore >= 0.8) { riskScore = 'Critical'; }\n      else if (maxScore >= 0.5) { riskScore = 'High'; }\n      else if (maxScore >= 0.2) { riskScore = 'Medium'; }\n      else { riskScore = 'Low'; }\n    }\n  }\n\n  // Build chat response\n  var header = '🎰 **Prompt Roulette V2**🎰\\n\\n';\n  var promptSection = '📝 **Random Prompt:**\\n> ' + promptText;\n  var sourceLine = '\\n📋 **Source:** ' + source;\n\n  var verdictSection;\n  if (flagged) {\n    var threatIcon = '🔴';\n    verdictSection = '\\n\\n' + threatIcon + ' **Lakera Verdict: THREAT DETECTED** ' + threatIcon\n      + '\\nThis prompt was flagged as potentially harmful.'\n      + detections;\n  } else {\n    var safeIcon = '🟢';\n    verdictSection = '\\n\\n' + safeIcon + ' **Lakera Verdict: SAFE** ✅'\n      + '\\nNo threats detected in this prompt.';\n  }\n\n  var riskLine = '\\n\\n**Risk Score:** ' + riskScore;\n\n  var output = header + promptSection + sourceLine + classificationLine + verdictSection + riskLine;\n\n  results.push({\n    json: {\n      output: output,\n      flagged: flagged,\n      riskScore: riskScore,\n      prompt: promptText,\n      source: source,\n      category1: cat1,\n      category2: cat2,\n      category3: cat3,\n    }\n  });\n}\nreturn results;"
+      },
+      "id": "28277558-8dd8-43ff-a96f-1e09cde87110",
+      "name": "Format Verdict",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1504,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.lakera.ai/v2/guard",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"messages\": $json.messages, \"breakdown\": $json.breakdown } }}",
+        "options": {
+          "response": {},
+          "timeout": 30000
+        }
+      },
+      "id": "105d70a2-5e8e-4571-b1ce-2a8cb425d4f0",
+      "name": "Call Lakera Guard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1264,
+        0
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "dwOBu8Lap8nw2gG9",
+          "name": "LakeraAPI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d97eef0b-0a6f-49f9-b3be-d386fd3d7c97",
+      "name": "When chat message received",
+      "webhookId": "afb7a50f-a92f-46fd-9f4d-0b3f200e2b85"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Split Info": {
+      "main": [
+        [
+          {
+            "node": "Pick Random Offset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Random Offset": {
+      "main": [
+        [
+          {
+            "node": "Fetch Random Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Random Prompt": {
+      "main": [
+        [
+          {
+            "node": "Extract Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Lakera Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Lakera Guard": {
+      "main": [
+        [
+          {
+            "node": "Format Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "Get Split Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "d14b20e5-1e7c-428a-abbf-eaddeab00733",
+  "meta": {
+    "instanceId": "488742ab84b752150bb40f29b5842302851aea38685d231952c53679b09c8a83"
+  },
+  "nodeGroups": [],
+  "id": "lBUZ2BiTxUEwpG5y",
+  "tags": []
+}

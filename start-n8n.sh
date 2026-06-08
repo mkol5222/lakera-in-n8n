@@ -150,19 +150,14 @@ write_opencode_mcp_config() {
                 local base_url="$1"
                 local mcp_url="${base_url%/}/mcp-server/http"
 
-        if [ -z "$n8n_mcp_access_token" ]; then
-                echo -e "  ${WARN} n8n_mcp_access_token not set — skipping opencode MCP config update."
-                return
-        fi
-
         echo -e "  ${WRITE} Writing opencode MCP config to $opencode_config_path"
 
         mkdir -p "$(dirname "$opencode_config_path")"
 
-        node - "$opencode_config_path" "$opencode_mcp_name" "$mcp_url" "$n8n_mcp_access_token" <<'NODE'
+        node - "$opencode_config_path" "$opencode_mcp_name" "$mcp_url" <<'NODE'
 const fs = require('fs');
 
-const [, , configPath, serverName, serverUrl, accessToken] = process.argv;
+const [, , configPath, serverName, serverUrl] = process.argv;
 const defaultConfig = { $schema: 'https://opencode.ai/config.json', mcp: {} };
 
 let config = defaultConfig;
@@ -187,13 +182,13 @@ if (!config.mcp || typeof config.mcp !== 'object' || Array.isArray(config.mcp)) 
     config.mcp = {};
 }
 
+// Always rewrite the n8n MCP entry so the URL tracks the current
+// trycloudflare tunnel hostname. OAuth is delegated to the n8n MCP
+// server (N8N_MCP_ACCESS_ENABLED=true on the container).
 config.mcp[serverName] = {
     type: 'remote',
     url: serverUrl,
-    oauth: false,
-    headers: {
-        Authorization: `Bearer ${accessToken}`,
-    },
+    oauth: {},
 };
 
 fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -417,9 +412,7 @@ echo -e "  ${BOLD}${MAGENTA}⚙️  INSTANCE  INFO${NC}"
 echo -e "  ${DIM}────────────────────────────────────────────────────${NC}"
 printf "  ${BOLD}%-22s${NC} %s\n" "Docker Container:" "$docker_container_name"
 printf "  ${BOLD}%-22s${NC} %s\n" "Data Volume:"      "$n8n_volume_name"
-if [ -n "$n8n_mcp_access_token" ]; then
-    printf "  ${BOLD}%-22s${NC} %s\n" "MCP Server:" "${tunnel_url%/}/mcp-server/http"
-fi
+printf "  ${BOLD}%-22s${NC} %s\n" "MCP Server:"       "${tunnel_url%/}/mcp-server/http"
 echo ""
 
 echo -e "  ${BOLD}${RED}🛑  STOP${NC}"
@@ -465,9 +458,7 @@ n8n_access_file="$PWD/N8N-ACCESS.md"
     echo ""
     echo "- **Docker container:** \`$docker_container_name\`"
     echo "- **Data volume:** \`$n8n_volume_name\`"
-    if [ -n "$n8n_mcp_access_token" ]; then
-        echo "- **MCP server:** [${tunnel_url%/}/mcp-server/http](${tunnel_url%/}/mcp-server/http)"
-    fi
+    echo "- **MCP server:** [${tunnel_url%/}/mcp-server/http](${tunnel_url%/}/mcp-server/http)"
     echo ""
     echo "## 🛑 Stop"
     echo ""

@@ -15,7 +15,7 @@ opencode mcp auth
 
 2. Add MCP Context7 for documentation access with command (it will ask for authentication with Context7 account):
 ```shell
-npx ctx7 setup --opencode -y
+npx -y ctx7 setup --opencode -y
 ```
 
 3. Check MCP servers with command:

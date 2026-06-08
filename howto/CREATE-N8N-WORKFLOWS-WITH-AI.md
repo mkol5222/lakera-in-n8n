@@ -13,15 +13,22 @@
 opencode mcp auth
 ```
 
-2. Check MCP servers with command:
+2. Add MCP Context7 for documentation access with command (it will ask for authentication with Context7 account):
+````shellshell
+npx ctx7 setup --opencode -y
+```
+
+3. Check MCP servers with command:
 ````shell
 opencode mcp list
 ```
 
-3. Start your new opencode agent session with command:
+4. Start your new opencode agent session with command:
 ````shell
 opencode
 ```
 
-
-
+5. Prompt your agent to create your first n8n workflow for your use case, e.g.:
+````
+Create new n8n workflow with manual trigger that is checking Public IP using ifconfig.me service.
+```

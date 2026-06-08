@@ -29,6 +29,6 @@ opencode
 ```
 
 5. Prompt your agent to create your first n8n workflow for your use case, e.g.:
-````
+```
 Create new n8n workflow with manual trigger that is checking Public IP using ifconfig.me service.
 ```

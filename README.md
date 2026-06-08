@@ -22,7 +22,7 @@
 
 Here is table of bundled workflows to get you started by import from the [workflows](workflows) folder in this repository:
 
-    | Workflow Name | Description | Raw URL (copy to import) |
-    | --- | --- | --- |
-    | Get Public IP | Retrieves the public IP address of the N8N instance | <code>https://raw.githubusercontent.com/mkol5222/lakera-in-n8n/refs/heads/main/workflows/get-public-ip.json</code> |
-    | Prompt Roulette | Demonstrates Lakera AI integration with N8N | <code>https://raw.githubusercontent.com/mkol5222/lakera-in-n8n/refs/heads/main/workflows/prompt-roulette.json</code> |
+| Workflow Name | Description | Raw URL (copy to import) |
+| --- | --- | --- |
+| Get Public IP | Retrieves the public IP address of the N8N instance | <code>https://raw.githubusercontent.com/mkol5222/lakera-in-n8n/refs/heads/main/workflows/get-public-ip.json</code> |
+| Prompt Roulette | Demonstrates Lakera AI integration with N8N | <code>https://raw.githubusercontent.com/mkol5222/lakera-in-n8n/refs/heads/main/workflows/prompt-roulette.json</code> |

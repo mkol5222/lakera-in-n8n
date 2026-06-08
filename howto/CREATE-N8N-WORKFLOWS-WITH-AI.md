@@ -8,23 +8,23 @@
 
 ## Steps
 
-1. Open new terminal and authenticate N8N MCP server with command:
-````shell
+1. We assume [mkol5222/lakera-in-n8n](https://github.com/mkol5222/lakera-in-n8n) Codespace. Open new terminal in Codespace and authenticate N8N MCP server with command:
+```shell
 opencode mcp auth
 ```
 
 2. Add MCP Context7 for documentation access with command (it will ask for authentication with Context7 account):
-````shellshell
+```shell
 npx ctx7 setup --opencode -y
 ```
 
 3. Check MCP servers with command:
-````shell
+```shell
 opencode mcp list
 ```
 
 4. Start your new opencode agent session with command:
-````shell
+```shell
 opencode
 ```
 

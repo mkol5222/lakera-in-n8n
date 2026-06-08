@@ -87,31 +87,36 @@ ensure_node_with_nvm() {
 }
 
 ensure_opencode() {
-    export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+    # Node + npm must already be installed; the main flow calls
+    # ensure_node_with_nvm before this function. Bail out clearly
+    # if npm is missing so we never fall back to the curl installer.
+    if ! command -v npm &> /dev/null; then
+        echo -e "  ${CROSS} npm not found — Node must be installed before opencode."
+        exit 1
+    fi
+
+    # Make the active npm prefix's bin directory discoverable so the
+    # freshly installed `opencode` binary is on PATH in this shell.
+    npm_prefix_bin="$(npm config get prefix 2>/dev/null)/bin"
+    if [ -d "$npm_prefix_bin" ]; then
+        export PATH="$npm_prefix_bin:$HOME/.local/bin:$HOME/bin:$PATH"
+    else
+        export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+    fi
 
     if command -v opencode &> /dev/null; then
         echo -e "  ${CHECK} Opencode already installed: $(opencode --version 2>/dev/null || echo available)"
         return
     fi
 
-    echo -e "  ${TOOL} Opencode not found — installing..."
-    curl -fsSL https://opencode.ai/install | bash
-
-    # Some installers place binaries in user-local paths not present in non-login shells.
-    export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$HOME/bin:$PATH"
-
-    if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
-        detected_opencode_path=$(find "$HOME" -maxdepth 5 -type f -name opencode 2>/dev/null | head -n 1)
-        if [ -n "$detected_opencode_path" ]; then
-            export PATH="$(dirname "$detected_opencode_path"):$PATH"
-        fi
-    fi
+    echo -e "  ${TOOL} Opencode not found — installing via npm (opencode-ai)..."
+    npm i -g opencode-ai
 
     if command -v opencode &> /dev/null; then
         echo -e "  ${CHECK} Opencode installed successfully: $(opencode --version 2>/dev/null || echo available)"
     else
         echo -e "  ${CROSS} Opencode installation finished but command is still not available in PATH."
-        echo -e "  ${INFO} Try opening a new shell, or add ~/.local/bin to your PATH."
+        echo -e "  ${INFO} Try opening a new shell, or add $npm_prefix_bin to your PATH."
         exit 1
     fi
 }

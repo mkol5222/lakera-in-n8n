@@ -16,6 +16,9 @@ n8n_owner_password_hash="${n8n_owner_password_hash:-}"
 n8n_mcp_access_token="${n8n_mcp_access_token:-}"
 n8n_data_dir="${n8n_data_dir:-$PWD/.n8n}"
 n8n_volume_name="${n8n_volume_name:-n8n_data}"
+workflow_bundle_dir="${workflow_bundle_dir:-$PWD/workflows}"
+workflow_bundle_mount_path="/workflows"
+workflow_bundle_state_file="/home/node/.n8n/.bundled-workflows.sha256"
 opencode_config_path="${opencode_config_path:-$PWD/opencode.json}"
 mcp_config_path="${mcp_config_path:-$PWD/.mcp.json}"
 opencode_mcp_name="${opencode_mcp_name:-n8n-mcp}"
@@ -333,6 +336,90 @@ remove_existing_container() {
     fi
 }
 
+compute_workflow_bundle_fingerprint() {
+    if [ ! -d "$workflow_bundle_dir" ]; then
+        return
+    fi
+
+    shopt -s nullglob
+    local workflow_files=("$workflow_bundle_dir"/*.json)
+    shopt -u nullglob
+
+    if [ ${#workflow_files[@]} -eq 0 ]; then
+        return
+    fi
+
+    {
+        for workflow_file in "${workflow_files[@]}"; do
+            sha256sum "$workflow_file"
+        done
+    } | sha256sum | awk '{print $1}'
+}
+
+wait_for_n8n_ready() {
+    echo -e "  ${CLOCK} Waiting for n8n to accept requests..."
+
+    for _ in $(seq 1 60); do
+        if curl -fsS "http://127.0.0.1:$n8n_docker_port/healthz" >/dev/null 2>&1; then
+            echo -e "  ${CHECK} n8n is ready."
+            return 0
+        fi
+
+        if ! docker ps --format '{{.Names}}' | grep -Fxq "$docker_container_name"; then
+            echo -e "  ${CROSS} n8n container exited before becoming ready."
+            docker logs "$docker_container_name" || true
+            return 1
+        fi
+
+        sleep 1
+    done
+
+    echo -e "  ${CROSS} Timed out waiting for n8n readiness."
+    docker logs "$docker_container_name" | tail -n 50 || true
+    return 1
+}
+
+import_bundled_workflows() {
+    if [ ! -d "$workflow_bundle_dir" ]; then
+        echo -e "  ${INFO} No workflow bundle directory found at $workflow_bundle_dir; skipping import."
+        return
+    fi
+
+    shopt -s nullglob
+    local workflow_files=("$workflow_bundle_dir"/*.json)
+    shopt -u nullglob
+
+    if [ ${#workflow_files[@]} -eq 0 ]; then
+        echo -e "  ${INFO} No bundled workflows found in $workflow_bundle_dir; skipping import."
+        return
+    fi
+
+    local bundle_fingerprint
+    bundle_fingerprint=$(compute_workflow_bundle_fingerprint)
+
+    if [ -z "$bundle_fingerprint" ]; then
+        echo -e "  ${WARN} Failed to compute workflow bundle fingerprint; skipping import."
+        return
+    fi
+
+    local imported_fingerprint
+    imported_fingerprint=$(docker exec "$docker_container_name" sh -c "test -f '$workflow_bundle_state_file' && cat '$workflow_bundle_state_file'" 2>/dev/null || true)
+
+    if [ "$imported_fingerprint" = "$bundle_fingerprint" ]; then
+        echo -e "  ${CHECK} Bundled workflows already imported for this data volume."
+        return
+    fi
+
+    echo -e "  ${TOOL} Importing bundled workflows from $workflow_bundle_dir"
+    docker exec "$docker_container_name" n8n import:workflow \
+        --separate \
+        --input="$workflow_bundle_mount_path" \
+        --activeState=fromJson
+
+    docker exec "$docker_container_name" sh -c "printf '%s\n' '$bundle_fingerprint' > '$workflow_bundle_state_file'"
+    echo -e "  ${CHECK} Bundled workflows imported successfully."
+}
+
 trap cleanup exit int term
 
 if ! docker info >/dev/null 2>&1; then
@@ -379,6 +466,7 @@ docker run -d \
     --name "$docker_container_name" \
     -p "$n8n_docker_port:$n8n_docker_port" \
     -v "$n8n_volume_name:/home/node/.n8n" \
+    -v "$workflow_bundle_dir:$workflow_bundle_mount_path:ro" \
     -e N8N_EDITOR_BASE_URL="$tunnel_url" \
     -e N8N_HOST="$n8n_host" \
     -e N8N_PROTOCOL="https" \
@@ -392,6 +480,9 @@ docker run -d \
     -e N8N_MCP_MANAGED_BY_ENV="true" \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
+
+wait_for_n8n_ready
+import_bundled_workflows
 
 # ──────────────────────────────────────────────────
 #  Summary banner

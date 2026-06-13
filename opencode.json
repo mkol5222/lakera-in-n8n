@@ -3,7 +3,7 @@
   "mcp": {
     "n8n-mcp": {
       "type": "remote",
-      "url": "https://oven-optimize-bridge-patrick.trycloudflare.com/mcp-server/http",
+      "url": "https://caring-commitments-robert-targets.trycloudflare.com/mcp-server/http",
       "oauth": {}
     }
   }

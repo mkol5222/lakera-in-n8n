@@ -356,30 +356,9 @@ compute_workflow_bundle_fingerprint() {
     } | sha256sum | awk '{print $1}'
 }
 
-wait_for_n8n_ready() {
-    echo -e "  ${CLOCK} Waiting for n8n to accept requests..."
-
-    for _ in $(seq 1 60); do
-        if curl -fsS "http://127.0.0.1:$n8n_docker_port/healthz" >/dev/null 2>&1; then
-            echo -e "  ${CHECK} n8n is ready."
-            return 0
-        fi
-
-        if ! docker ps --format '{{.Names}}' | grep -Fxq "$docker_container_name"; then
-            echo -e "  ${CROSS} n8n container exited before becoming ready."
-            docker logs "$docker_container_name" || true
-            return 1
-        fi
-
-        sleep 1
-    done
-
-    echo -e "  ${CROSS} Timed out waiting for n8n readiness."
-    docker logs "$docker_container_name" | tail -n 50 || true
-    return 1
-}
-
 import_bundled_workflows() {
+    # Run import in a short-lived container BEFORE the daemon starts so there
+    # is no SQLite write-lock conflict with the running n8n server process.
     if [ ! -d "$workflow_bundle_dir" ]; then
         echo -e "  ${INFO} No workflow bundle directory found at $workflow_bundle_dir; skipping import."
         return
@@ -402,8 +381,13 @@ import_bundled_workflows() {
         return
     fi
 
+    # Check the fingerprint stored inside the persistent n8n data volume.
     local imported_fingerprint
-    imported_fingerprint=$(docker exec "$docker_container_name" sh -c "test -f '$workflow_bundle_state_file' && cat '$workflow_bundle_state_file'" 2>/dev/null || true)
+    imported_fingerprint=$(docker run --rm \
+        -v "$n8n_volume_name:/home/node/.n8n" \
+        --entrypoint sh \
+        "$n8n_docker_image" \
+        -c "test -f '$workflow_bundle_state_file' && cat '$workflow_bundle_state_file'" 2>/dev/null || true)
 
     if [ "$imported_fingerprint" = "$bundle_fingerprint" ]; then
         echo -e "  ${CHECK} Bundled workflows already imported for this data volume."
@@ -411,12 +395,21 @@ import_bundled_workflows() {
     fi
 
     echo -e "  ${TOOL} Importing bundled workflows from $workflow_bundle_dir"
-    docker exec "$docker_container_name" n8n import:workflow \
+    docker run --rm \
+        -v "$n8n_volume_name:/home/node/.n8n" \
+        -v "$workflow_bundle_dir:$workflow_bundle_mount_path:ro" \
+        --entrypoint n8n \
+        "$n8n_docker_image" \
+        import:workflow \
         --separate \
-        --input="$workflow_bundle_mount_path" \
-        --activeState=fromJson
+        --input="$workflow_bundle_mount_path"
 
-    docker exec "$docker_container_name" sh -c "printf '%s\n' '$bundle_fingerprint' > '$workflow_bundle_state_file'"
+    # Persist the fingerprint so the import is skipped on subsequent restarts.
+    docker run --rm \
+        -v "$n8n_volume_name:/home/node/.n8n" \
+        --entrypoint sh \
+        "$n8n_docker_image" \
+        -c "printf '%s\n' '$bundle_fingerprint' > '$workflow_bundle_state_file'"
     echo -e "  ${CHECK} Bundled workflows imported successfully."
 }
 
@@ -460,13 +453,14 @@ docker volume create "$n8n_volume_name" >/dev/null 2>&1 || true
 write_opencode_mcp_config "$tunnel_url"
 write_mcp_config "$tunnel_url"
 
+import_bundled_workflows
+
 echo -e "  ${ROCKET} Starting n8n Docker container..."
 remove_existing_container
 docker run -d \
     --name "$docker_container_name" \
     -p "$n8n_docker_port:$n8n_docker_port" \
     -v "$n8n_volume_name:/home/node/.n8n" \
-    -v "$workflow_bundle_dir:$workflow_bundle_mount_path:ro" \
     -e N8N_EDITOR_BASE_URL="$tunnel_url" \
     -e N8N_HOST="$n8n_host" \
     -e N8N_PROTOCOL="https" \
@@ -480,9 +474,6 @@ docker run -d \
     -e N8N_MCP_MANAGED_BY_ENV="true" \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
-
-wait_for_n8n_ready
-import_bundled_workflows
 
 # ──────────────────────────────────────────────────
 #  Summary banner

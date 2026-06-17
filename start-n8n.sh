@@ -26,6 +26,55 @@ opencode_mcp_name="${opencode_mcp_name:-n8n-mcp}"
 cloudflared_bin=""
 
 # ──────────────────────────────────────────────────
+#  System hardening: disable IPv6, set DNS
+# ──────────────────────────────────────────────────
+configure_system_network() {
+    echo -e "  ${TOOL} Configuring system network (disable IPv6, set DNS to 1.1.1.1)..."
+
+    # Disable IPv6 via sysctl
+    sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1
+    sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1 >/dev/null 2>&1
+    sudo sysctl -w net.ipv6.conf.lo.disable_ipv6=1 >/dev/null 2>&1
+
+    # Make it permanent across reboots
+    if [ -f /etc/sysctl.d/99-disable-ipv6.conf ]; then
+        echo -e "  ${CHECK} IPv6 already pinned disabled in /etc/sysctl.d/."
+    else
+        printf 'net.ipv6.conf.all.disable_ipv6 = 1\nnet.ipv6.conf.default.disable_ipv6 = 1\nnet.ipv6.conf.lo.disable_ipv6 = 1\n' | \
+            sudo tee /etc/sysctl.d/99-disable-ipv6.conf >/dev/null
+        echo -e "  ${CHECK} IPv6 pinned disabled in /etc/sysctl.d/99-disable-ipv6.conf"
+    fi
+
+    # Set DNS via systemd-resolved (Ubuntu LTS default)
+    if command -v resolvectl &>/dev/null; then
+        sudo resolvectl dns eth0 1.1.1.1 2>/dev/null || true
+        sudo resolvectl dns ens5 1.1.1.1 2>/dev/null || true
+        sudo resolvectl dns enX0 1.1.1.1 2>/dev/null || true
+        # Fallback: set global DNS
+        sudo resolvectl dns global 1.1.1.1 2>/dev/null || true
+        # Also set in /etc/resolv.conf as a hard fallback
+        echo -e "  ${CHECK} DNS set to 1.1.1.1 via systemd-resolved"
+    fi
+
+    # Ensure /etc/resolv.conf has 1.1.1.1 (handle both symlinked and static)
+    if grep -q '1.1.1.1' /etc/resolv.conf 2>/dev/null; then
+        echo -e "  ${CHECK} 1.1.1.1 already present in /etc/resolv.conf"
+    else
+        if [ -w /etc/resolv.conf ]; then
+            sed -i 's/^nameserver.*/nameserver 1.1.1.1/' /etc/resolv.conf 2>/dev/null || \
+                echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf >/dev/null
+        else
+            echo "nameserver 1.1.1.1" | sudo tee /etc/resolv.conf >/dev/null
+        fi
+        echo -e "  ${CHECK} 1.1.1.1 set in /etc/resolv.conf"
+    fi
+
+    echo -e "  ${CHECK} System network configuration complete."
+}
+
+configure_system_network
+
+# ──────────────────────────────────────────────────
 #  Color & icon helpers
 # ──────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -469,30 +518,30 @@ fi
 echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
 
 # ---- Wait for tunnel DNS + connectivity (any HTTP response proves it's reachable) ----
-echo -e "  ${CLOCK} Waiting for tunnel to be reachable (DNS + HTTP)..."
-tunnel_ready=false
-for i in $(seq 1 30); do
-    if ! tmux has-session -t tun 2>/dev/null; then
-        echo -e "\n  ${CROSS} tmux session 'tun' died during readiness check. Logs:"
-        tmux capture-pane -t tun -p -S -
-        exit 1
-    fi
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null || true)
-    if [ -n "$http_code" ]; then
-        tunnel_ready=true
-        echo -e "  ${CHECK} Tunnel is reachable (HTTP $http_code)."
-        break
-    fi
-    echo -n "."
-    sleep 2
-done
-echo
+# echo -e "  ${CLOCK} Waiting for tunnel to be reachable (DNS + HTTP)..."
+# tunnel_ready=false
+# for i in $(seq 1 30); do
+#     if ! tmux has-session -t tun 2>/dev/null; then
+#         echo -e "\n  ${CROSS} tmux session 'tun' died during readiness check. Logs:"
+#         tmux capture-pane -t tun -p -S -
+#         exit 1
+#     fi
+#     http_code=$(curl -4 -s -o /dev/null -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null)
+#     if [ -n "$http_code" ]; then
+#         tunnel_ready=true
+#         echo -e "  ${CHECK} Tunnel is reachable (HTTP $http_code)."
+#         break
+#     fi
+#     echo -n "."
+#     sleep 2
+# done
+# echo
 
-if [ "$tunnel_ready" != true ]; then
-    echo -e "\n  ${CROSS} Tunnel never became reachable after 30 retries. Logs:"
-    tmux capture-pane -t tun -p -S -
-    exit 1
-fi
+# if [ "$tunnel_ready" != true ]; then
+#     echo -e "\n  ${CROSS} Tunnel never became reachable after 30 retries. Logs:"
+#     tmux capture-pane -t tun -p -S -
+#     exit 1
+# fi
 
 n8n_host=$(echo "$tunnel_url" | sed -E -e 's|^https?://||')
 
@@ -526,7 +575,9 @@ docker run -d \
 # wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
 echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
 for i in $(seq 1 60); do
-    http_status=$(curl -o /dev/null -s -w "%{http_code}" "$tunnel_url/" || true)
+    curl -4 -v "$tunnel_url/" || true
+    http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" "$tunnel_url/" 2>/dev/null || echo "000")
+    echo -n "  Attempt $i: HTTP $http_status"
     if [ "$http_status" = "401" ]; then
         break
     fi

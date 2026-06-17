@@ -442,7 +442,7 @@ ensure_n8n_owner_password_hash
 
 echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-tmux new-session -d -s tun "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
+tmux new-session -d -s tun -x 200 "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
 
 tunnel_url=""
 echo -e "  ${CLOCK} Waiting for tunnel URL..."
@@ -467,6 +467,32 @@ if [ -z "$tunnel_url" ]; then
 fi
 
 echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
+
+# ---- Wait for tunnel DNS + connectivity (any HTTP response proves it's reachable) ----
+echo -e "  ${CLOCK} Waiting for tunnel to be reachable (DNS + HTTP)..."
+tunnel_ready=false
+for i in $(seq 1 30); do
+    if ! tmux has-session -t tun 2>/dev/null; then
+        echo -e "\n  ${CROSS} tmux session 'tun' died during readiness check. Logs:"
+        tmux capture-pane -t tun -p -S -
+        exit 1
+    fi
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null || true)
+    if [ -n "$http_code" ]; then
+        tunnel_ready=true
+        echo -e "  ${CHECK} Tunnel is reachable (HTTP $http_code)."
+        break
+    fi
+    echo -n "."
+    sleep 2
+done
+echo
+
+if [ "$tunnel_ready" != true ]; then
+    echo -e "\n  ${CROSS} Tunnel never became reachable after 30 retries. Logs:"
+    tmux capture-pane -t tun -p -S -
+    exit 1
+fi
 
 n8n_host=$(echo "$tunnel_url" | sed -E -e 's|^https?://||')
 

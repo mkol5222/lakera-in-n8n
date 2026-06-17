@@ -73,7 +73,7 @@ fi
 # ---- Start tunnel inside tmux session 'tun' ----
 echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-tmux new-session -d -s tun "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
+tmux new-session -d -s tun -x 200 "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
 
 # ---- Extract tunnel URL from logs ----
 tunnel_url=""

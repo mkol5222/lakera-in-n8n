@@ -23,7 +23,6 @@ opencode_config_path="${opencode_config_path:-$PWD/opencode.json}"
 mcp_config_path="${mcp_config_path:-$PWD/.mcp.json}"
 opencode_mcp_name="${opencode_mcp_name:-n8n-mcp}"
 
-cloudflared_pid=""
 cloudflared_bin=""
 
 # ──────────────────────────────────────────────────
@@ -285,10 +284,30 @@ install_cloudflared() {
     echo -e "  ${CHECK} cloudflared installed successfully."
 }
 
+install_tmux() {
+    echo -e "  ${TOOL} tmux not found — installing..."
+    sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+    echo -e "  ${CHECK} tmux installed successfully."
+}
+
 if command -v cloudflared &> /dev/null; then
     cloudflared_bin="cloudflared"
 else
     install_cloudflared
+fi
+
+# ---- Ensure tmux is installed ----
+if command -v tmux &> /dev/null; then
+    echo -e "  ${CHECK} tmux is available."
+else
+    install_tmux
+fi
+
+# ---- Kill existing tmux session 'tun' if present ----
+if tmux has-session -t tun 2>/dev/null; then
+    echo -e "  ${TOOL} Killing existing tmux session 'tun'..."
+    tmux kill-session -t tun
+    sleep 1
 fi
 
 ensure_node_with_nvm
@@ -320,10 +339,9 @@ cleanup() {
     echo -e "  ${BROOM} Cleaning up..."
     docker stop "$docker_container_name" >/dev/null 2>&1 || true
     docker rm "$docker_container_name" >/dev/null 2>&1 || true
-    if [ -n "$cloudflared_pid" ] && kill -0 "$cloudflared_pid" 2>/dev/null; then
-        kill "$cloudflared_pid" 2>/dev/null || true
+    if tmux has-session -t tun 2>/dev/null; then
+        tmux kill-session -t tun
     fi
-    pkill -f "$cloudflared_bin tunnel --url http://localhost:$n8n_docker_port" >/dev/null 2>&1 || true
     echo -e "  ${CHECK} Cleanup complete."
 }
 
@@ -422,25 +440,29 @@ fi
 
 ensure_n8n_owner_password_hash
 
-echo -e "  ${GLOBE} Starting Cloudflare tunnel..."
-tmp_log=$(mktemp)
-$cloudflared_bin tunnel --url "http://localhost:$n8n_docker_port" --loglevel "$cloudflared_log_level" >"$tmp_log" 2>&1 &
-cloudflared_pid=$!
+echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+tmux new-session -d -s tun "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
 
 tunnel_url=""
 echo -e "  ${CLOCK} Waiting for tunnel URL..."
 for i in $(seq 1 30); do
-    tunnel_url=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' "$tmp_log" | head -1)
+    # Bail if tmux session died
+    if ! tmux has-session -t tun 2>/dev/null; then
+        echo -e "\n  ${CROSS} tmux session 'tun' died unexpectedly. Logs:"
+        tmux capture-pane -t tun -p -S -
+        exit 1
+    fi
+    tunnel_url=$(tmux capture-pane -t tun -p -S - | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' | head -1)
     if [ -n "$tunnel_url" ]; then
         break
     fi
     sleep 1
 done
 
-rm -f "$tmp_log"
-
 if [ -z "$tunnel_url" ]; then
-    echo -e "  ${CROSS} Failed to get tunnel URL from cloudflared."
+    echo -e "\n  ${CROSS} Failed to obtain tunnel URL within 30s. Logs:"
+    tmux capture-pane -t tun -p -S -
     exit 1
 fi
 
@@ -474,6 +496,18 @@ docker run -d \
     -e N8N_MCP_MANAGED_BY_ENV="true" \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
+
+# wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
+echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
+for i in $(seq 1 60); do
+    http_status=$(curl -o /dev/null -s -w "%{http_code}" "$tunnel_url/rest/login" || true)
+    if [ "$http_status" = "401" ]; then
+        break
+    fi
+    sleep 2
+    echo -n "."
+done
+echo
 
 # ──────────────────────────────────────────────────
 #  Summary banner

@@ -3,7 +3,7 @@
   "mcp": {
     "n8n-mcp": {
       "type": "remote",
-      "url": "https://partnership-latest-composed-edmonton.trycloudflare.com/mcp-server/http",
+      "url": "https://diamonds-administered-ball-ideal.trycloudflare.com/mcp-server/http",
       "oauth": {}
     }
   }

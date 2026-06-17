@@ -526,8 +526,11 @@ docker run -d \
 # wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
 echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
 for i in $(seq 1 60); do
-    http_status=$(curl -o /dev/null -s -w "%{http_code}" "$tunnel_url/rest/login" || true)
+    http_status=$(curl -o /dev/null -s -w "%{http_code}" "$tunnel_url/" || true)
     if [ "$http_status" = "401" ]; then
+        break
+    fi
+    if [ "$http_status" = "200" ]; then
         break
     fi
     sleep 2

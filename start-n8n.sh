@@ -388,6 +388,7 @@ docker run -d \
     -e N8N_INSTANCE_OWNER_PASSWORD_HASH="$n8n_owner_password_hash" \
     -e N8N_MCP_MANAGED_BY_ENV="true" \
     -e N8N_MCP_ACCESS_ENABLED="true" \
+    -e N8N_PUSH_BACKEND="sse" \
     "$n8n_docker_image"
 
 echo -e "  ${CLOCK} Waiting for n8n to be accessible..."

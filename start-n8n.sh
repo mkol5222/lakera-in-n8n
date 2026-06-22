@@ -344,7 +344,14 @@ setup_tailscale_funnel() {
     if ! tailscale status &>/dev/null 2>&1; then
         echo -e "  ${TOOL} Starting tailscaled daemon..."
         sudo tailscaled &>/tmp/tailscaled.log &
-        sleep 3
+
+        # Wait for the socket to appear (up to 15 s) before chmod
+        local sock_wait=0
+        while [ $sock_wait -lt 15 ] && [ ! -S /var/run/tailscale/tailscaled.sock ]; do
+            sleep 1
+            sock_wait=$((sock_wait + 1))
+        done
+
         # Grant current user access to the socket so tailscale CLI works without sudo
         sudo chmod a+rw /var/run/tailscale/tailscaled.sock 2>/dev/null || true
     fi
@@ -354,20 +361,26 @@ setup_tailscale_funnel() {
         | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write(JSON.parse(d).BackendState||''); }catch(e){} })" 2>/dev/null || echo "")
 
     if [ "$backend_state" != "Running" ]; then
-        echo -e ""
-        echo -e "  ${BOLD}${CYAN}Tailscale sign-in required${NC}"
-        echo -e ""
-        echo -e "  A sign-in URL will appear below — open it in your browser."
-        echo -e ""
-        echo -e "  ${BOLD}How to sign in with GitHub:${NC}"
-        echo -e "    On the Tailscale login page, click ${BOLD}'Sign in with GitHub'${NC}."
-        echo -e ""
-        echo -e "  ${BOLD}How to approve this new device (devcontainer / Codespace):${NC}"
-        echo -e "    After signing in, visit ${BOLD}https://login.tailscale.com/admin/machines${NC}"
-        echo -e "    and authorise the new machine if your tailnet requires device approval."
-        echo -e ""
-        tailscale up
-        echo -e ""
+        if [ -n "${TS_AUTHKEY:-}" ]; then
+            echo -e "  ${TOOL} Authenticating Tailscale with TS_AUTHKEY..."
+            sudo tailscale up --authkey="$TS_AUTHKEY" --accept-routes
+            echo -e ""
+        else
+            echo -e ""
+            echo -e "  ${BOLD}${CYAN}Tailscale sign-in required${NC}"
+            echo -e ""
+            echo -e "  A sign-in URL will appear below — open it in your browser."
+            echo -e ""
+            echo -e "  ${BOLD}How to sign in with GitHub:${NC}"
+            echo -e "    On the Tailscale login page, click ${BOLD}'Sign in with GitHub'${NC}."
+            echo -e ""
+            echo -e "  ${BOLD}How to approve this new device (devcontainer / Codespace):${NC}"
+            echo -e "    After signing in, visit ${BOLD}https://login.tailscale.com/admin/machines${NC}"
+            echo -e "    and authorise the new machine if your tailnet requires device approval."
+            echo -e ""
+            sudo tailscale up
+            echo -e ""
+        fi
 
         # tailscale up exits after auth, but the device might still need admin approval.
         # Poll until BackendState reaches Running before continuing.
@@ -424,15 +437,36 @@ start_tailscale_funnel() {
         tailscale funnel --bg "${n8n_docker_port}" >"$1" 2>&1
     }
 
+    _show_funnel_error() {
+        local log="$1"
+        echo -e "  ${WARN} Tailscale Funnel failed to enable:"
+        while IFS= read -r line; do echo "    $line"; done < "$log"
+        echo ""
+
+        # Tailscale emits a direct one-click enable URL when Funnel is off.
+        # Extract it so the user doesn't have to hunt through the admin panel.
+        local direct_url
+        direct_url=$(grep -oE 'https://login\.tailscale\.com/f/funnel\?[^ ]+' "$log" | head -1)
+
+        if [ -n "$direct_url" ]; then
+            echo -e "  ${GLOBE} ${BOLD}Enable Funnel for this device with one click:${NC}"
+            echo -e "        ${BOLD}${CYAN}${direct_url}${NC}"
+            echo ""
+            echo -e "  ${INFO} After opening that link, also make sure ${BOLD}HTTPS Certificates${NC} are enabled:"
+            echo -e "        ${BOLD}https://login.tailscale.com/admin/dns${NC}"
+        else
+            echo -e "  ${INFO} To enable Funnel for your tailnet:"
+            echo -e "        1. Visit ${BOLD}https://login.tailscale.com/admin/dns${NC}"
+            echo -e "           Enable ${BOLD}HTTPS Certificates${NC} and ${BOLD}Funnel${NC}."
+        fi
+
+        echo ""
+        echo -e "  Press ${BOLD}Enter${NC} to retry once enabled, or Ctrl+C to abort."
+    }
+
     local funnel_log=/tmp/tailscale-funnel.log
     if ! _try_funnel "$funnel_log"; then
-        echo -e "  ${WARN} Tailscale Funnel failed to enable:"
-        while IFS= read -r line; do echo "    $line"; done < "$funnel_log"
-        echo ""
-        echo -e "  ${INFO} To enable Funnel for your tailnet:"
-        echo -e "        1. Visit ${BOLD}https://login.tailscale.com/admin/dns${NC}"
-        echo -e "           Enable ${BOLD}HTTPS Certificates${NC} and ${BOLD}Funnel${NC}."
-        echo -e "        2. Press ${BOLD}Enter${NC} to retry, or Ctrl+C to abort."
+        _show_funnel_error "$funnel_log"
         read -r
         if ! _try_funnel "$funnel_log"; then
             echo -e "  ${CROSS} Tailscale Funnel still failed:"

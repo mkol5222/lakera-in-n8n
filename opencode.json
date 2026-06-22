@@ -3,7 +3,7 @@
   "mcp": {
     "n8n-mcp": {
       "type": "remote",
-      "url": "https://d627004de40e.tail33dfcf.ts.net/mcp-server/http",
+      "url": "https://4dd5218c6404.tail8bc184.ts.net/mcp-server/http",
       "oauth": {}
     }
   }

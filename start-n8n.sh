@@ -28,8 +28,7 @@ require_devcontainer_environment() {
 
 require_devcontainer_environment
 
-docker_container_name="n8n-cloudflared"
-cloudflared_log_level="info"
+docker_container_name="n8n-tailscale"
 n8n_docker_image="n8nio/n8n"
 n8n_docker_port=5678
 n8n_basic_auth_user="${n8n_basic_auth_user:-admin}"
@@ -49,8 +48,6 @@ workflow_bundle_state_file="/home/node/.n8n/.bundled-workflows.sha256"
 opencode_config_path="${opencode_config_path:-$PWD/opencode.json}"
 mcp_config_path="${mcp_config_path:-$PWD/.mcp.json}"
 opencode_mcp_name="${opencode_mcp_name:-n8n-mcp}"
-
-cloudflared_bin=""
 
 # ──────────────────────────────────────────────────
 #  System hardening: disable IPv6, set DNS
@@ -327,127 +324,70 @@ fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 NODE
 }
 
-install_cloudflared() {
-    echo -e "  ${TOOL} cloudflared not found — installing..."
-    os=$(uname -s | tr '[:upper:]' '[:lower:]')
-    arch=$(uname -m)
-    case "$arch" in
-        x86_64|amd64) arch="amd64" ;;
-        aarch64|arm64) arch="arm64" ;;
-        armv7l|arm) arch="arm" ;;
-        *) echo -e "  ${CROSS} Unsupported architecture: $arch"; exit 1 ;;
-    esac
-    case "$os" in
-        linux) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}" ;;
-        darwin) url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${arch}" ;;
-        *) echo -e "  ${CROSS} Unsupported OS: $os"; exit 1 ;;
-    esac
-    echo -e "  ${DOWNLOAD} Downloading cloudflared from $url"
-    if [ -w /usr/local/bin ]; then
-        curl -sL "$url" -o /usr/local/bin/cloudflared
-        chmod +x /usr/local/bin/cloudflared
-        cloudflared_bin="cloudflared"
-    elif command -v sudo &> /dev/null; then
-        curl -sL "$url" -o /tmp/cloudflared
-        sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
-        sudo chmod +x /usr/local/bin/cloudflared
-        cloudflared_bin="cloudflared"
-    else
-        curl -sL "$url" -o ./cloudflared
-        chmod +x ./cloudflared
-        cloudflared_bin="./cloudflared"
-    fi
-    echo -e "  ${CHECK} cloudflared installed successfully."
-}
-
-install_tmux() {
-    echo -e "  ${TOOL} tmux not found — installing..."
-    sudo apt-get update -qq && sudo apt-get install -y -qq tmux
-    echo -e "  ${CHECK} tmux installed successfully."
-}
-
 # ──────────────────────────────────────────────────
-#  Public URL strategy
-#  Primary:  GitHub Codespaces public forwarded port.
-#  Fallback: cloudflared tunnel (local development only).
+#  Public URL strategy: Tailscale Funnel
 # ──────────────────────────────────────────────────
-if [ "${CODESPACES:-}" = "true" ] && [ -n "${CODESPACE_NAME:-}" ]; then
-    use_codespace_port=true
-    forwarding_domain="${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
-    echo -e "  ${GLOBE} GitHub Codespaces detected — using the public forwarded port as the primary public URL."
-else
-    use_codespace_port=false
-    echo -e "  ${INFO} Not in Codespaces — using cloudflared tunnel for the public URL."
-fi
-
-# Make the forwarded codespace port publicly reachable (no GitHub auth).
-expose_codespace_port() {
-    echo -e "  ${GLOBE} Setting port ${n8n_docker_port} visibility to public via gh CLI..."
-    if ! command -v gh &> /dev/null; then
-        echo -e "  ${WARN} gh CLI not found — cannot set port visibility automatically."
-        return 1
-    fi
-    # The port must be forwarded (container listening) before its
-    # visibility can be changed; retry while the agent detects it.
-    local i
-    for i in $(seq 1 30); do
-        if gh codespace ports visibility "${n8n_docker_port}:public" -c "$CODESPACE_NAME" >/dev/null 2>&1; then
-            echo -e "  ${CHECK} Port ${n8n_docker_port} is now public."
-            return 0
-        fi
-        sleep 2
-    done
-    echo -e "  ${WARN} Could not set port visibility via gh CLI (token may lack the 'codespace' scope)."
-    echo -e "  ${INFO} Set it manually: ${BOLD}gh codespace ports visibility ${n8n_docker_port}:public -c \$CODESPACE_NAME${NC}"
-    echo -e "  ${INFO} or in the VS Code PORTS tab: right-click the port → Port Visibility → Public."
-    return 1
+install_tailscale() {
+    echo -e "  ${TOOL} Tailscale not found — installing..."
+    curl -fsSL https://tailscale.com/install.sh | sh
+    echo -e "  ${CHECK} Tailscale installed."
 }
 
-# Confirm the public URL is reachable without an auth popup. A public port
-# reaches n8n directly (HTTP 200); a still-private port is intercepted by
-# GitHub's gateway with a redirect/auth challenge before reaching n8n.
-validate_public_port() {
-    echo -e "  ${CLOCK} Validating ${tunnel_url} is reachable without authentication..."
-    local i http_code
-    for i in $(seq 1 30); do
-        http_code=$(curl -4 -s -o /dev/null -w '%{http_code}' --max-time 15 "$tunnel_url/" 2>/dev/null || echo "000")
-        if [ "$http_code" = "200" ]; then
-            echo -e "  ${CHECK} Public URL reachable without authentication (HTTP ${http_code})."
-            return 0
-        fi
-        echo -n "."
-        sleep 2
-    done
-    echo
-    echo -e "  ${WARN} Public URL returned HTTP ${http_code} — it may still require GitHub authentication."
-    echo -e "  ${INFO} Verify port ${n8n_docker_port} visibility is Public in the PORTS tab."
-    return 1
+setup_tailscale_funnel() {
+    if ! command -v tailscale &>/dev/null; then
+        install_tailscale
+    else
+        echo -e "  ${CHECK} Tailscale already installed: $(tailscale version 2>/dev/null | head -1)"
+    fi
+
+    # Ensure the tailscaled daemon is running
+    if ! tailscale status &>/dev/null 2>&1; then
+        echo -e "  ${TOOL} Starting tailscaled daemon..."
+        sudo tailscaled &>/tmp/tailscaled.log &
+        sleep 3
+    fi
+
+    local backend_state
+    backend_state=$(tailscale status --json 2>/dev/null \
+        | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write(JSON.parse(d).BackendState||''); }catch(e){} })" 2>/dev/null || echo "")
+
+    if [ "$backend_state" != "Running" ]; then
+        echo -e ""
+        echo -e "  ${BOLD}${CYAN}Tailscale sign-in required${NC}"
+        echo -e ""
+        echo -e "  A sign-in URL will appear below — open it in your browser."
+        echo -e ""
+        echo -e "  ${BOLD}How to sign in with GitHub:${NC}"
+        echo -e "    On the Tailscale login page, click ${BOLD}'Sign in with GitHub'${NC}."
+        echo -e ""
+        echo -e "  ${BOLD}How to approve this new device (devcontainer / Codespace):${NC}"
+        echo -e "    After signing in, visit ${BOLD}https://login.tailscale.com/admin/machines${NC}"
+        echo -e "    and authorise the new machine if your tailnet requires device approval."
+        echo -e ""
+        tailscale up
+        echo -e ""
+        echo -e "  ${CHECK} Tailscale connected!"
+    else
+        echo -e "  ${CHECK} Tailscale already connected."
+    fi
+
+    local dns_name
+    dns_name=$(tailscale status --json 2>/dev/null \
+        | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write((JSON.parse(d).Self.DNSName||'').replace(/\\.$/,'')); }catch(e){} })" 2>/dev/null || echo "")
+
+    if [ -z "$dns_name" ]; then
+        echo -e "  ${CROSS} Could not determine Tailscale hostname."
+        exit 1
+    fi
+
+    echo -e "  ${GLOBE} Enabling Tailscale Funnel on port ${n8n_docker_port}..."
+    nohup tailscale funnel "${n8n_docker_port}" >/tmp/tailscale-funnel.log 2>&1 &
+    disown
+    sleep 2
+
+    tunnel_url="https://${dns_name}"
+    echo -e "  ${CHECK} Tailscale Funnel active: ${BOLD}${tunnel_url}${NC}"
 }
-
-if [ "$use_codespace_port" = true ]; then
-    echo -e "  ${INFO} Skipping cloudflared/tmux setup (only used as the local fallback)."
-else
-    # ---- Ensure cloudflared is installed (local fallback) ----
-    if command -v cloudflared &> /dev/null; then
-        cloudflared_bin="cloudflared"
-    else
-        install_cloudflared
-    fi
-
-    # ---- Ensure tmux is installed ----
-    if command -v tmux &> /dev/null; then
-        echo -e "  ${CHECK} tmux is available."
-    else
-        install_tmux
-    fi
-
-    # ---- Kill existing tmux session 'tun' if present ----
-    if tmux has-session -t tun 2>/dev/null; then
-        echo -e "  ${TOOL} Killing existing tmux session 'tun'..."
-        tmux kill-session -t tun
-        sleep 1
-    fi
-fi
 
 ensure_node_with_nvm
 ensure_opencode
@@ -478,9 +418,7 @@ cleanup() {
     echo -e "  ${BROOM} Cleaning up..."
     docker stop "$docker_container_name" >/dev/null 2>&1 || true
     docker rm "$docker_container_name" >/dev/null 2>&1 || true
-    if tmux has-session -t tun 2>/dev/null; then
-        tmux kill-session -t tun
-    fi
+    pkill -f "tailscale funnel" >/dev/null 2>&1 || true
     echo -e "  ${CHECK} Cleanup complete."
 }
 
@@ -579,67 +517,7 @@ fi
 
 ensure_n8n_owner_password_hash
 
-if [ "$use_codespace_port" = true ]; then
-    # Deterministic public URL for the forwarded port. Used for the n8n
-    # container env (must be known before the container starts); the real
-    # browseUrl is resolved from gh once the port is forwarded (below).
-    tunnel_url="https://${CODESPACE_NAME}-${n8n_docker_port}.${forwarding_domain}"
-    echo -e "  ${CHECK} Codespaces public URL: ${BOLD}${tunnel_url}${NC}"
-else
-    echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    tmux new-session -d -s tun -x 200 "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
-
-    tunnel_url=""
-    echo -e "  ${CLOCK} Waiting for tunnel URL..."
-    for i in $(seq 1 30); do
-        # Bail if tmux session died
-        if ! tmux has-session -t tun 2>/dev/null; then
-            echo -e "\n  ${CROSS} tmux session 'tun' died unexpectedly. Logs:"
-            tmux capture-pane -t tun -p -S -
-            exit 1
-        fi
-        tunnel_url=$(tmux capture-pane -t tun -p -S - | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' | head -1)
-        if [ -n "$tunnel_url" ]; then
-            break
-        fi
-        sleep 1
-    done
-
-    if [ -z "$tunnel_url" ]; then
-        echo -e "\n  ${CROSS} Failed to obtain tunnel URL within 30s. Logs:"
-        tmux capture-pane -t tun -p -S -
-        exit 1
-    fi
-
-    echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
-fi
-
-# ---- Wait for tunnel DNS + connectivity (any HTTP response proves it's reachable) ----
-# echo -e "  ${CLOCK} Waiting for tunnel to be reachable (DNS + HTTP)..."
-# tunnel_ready=false
-# for i in $(seq 1 30); do
-#     if ! tmux has-session -t tun 2>/dev/null; then
-#         echo -e "\n  ${CROSS} tmux session 'tun' died during readiness check. Logs:"
-#         tmux capture-pane -t tun -p -S -
-#         exit 1
-#     fi
-#     http_code=$(curl -4 -s -o /dev/null -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null)
-#     if [ -n "$http_code" ]; then
-#         tunnel_ready=true
-#         echo -e "  ${CHECK} Tunnel is reachable (HTTP $http_code)."
-#         break
-#     fi
-#     echo -n "."
-#     sleep 2
-# done
-# echo
-
-# if [ "$tunnel_ready" != true ]; then
-#     echo -e "\n  ${CROSS} Tunnel never became reachable after 30 retries. Logs:"
-#     tmux capture-pane -t tun -p -S -
-#     exit 1
-# fi
+setup_tailscale_funnel
 
 n8n_host=$(echo "$tunnel_url" | sed -E -e 's|^https?://||')
 
@@ -670,36 +548,18 @@ docker run -d \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
 
-if [ "$use_codespace_port" = true ]; then
-    # Make the now-listening forwarded port public, then prefer the real
-    # browseUrl reported by gh over the hand-built URL.
-    expose_codespace_port || true
-    resolved_url=$(gh codespace ports -c "$CODESPACE_NAME" \
-        --json sourcePort,browseUrl \
-        --jq ".[] | select(.sourcePort == ${n8n_docker_port}) | .browseUrl" 2>/dev/null | head -1)
-    if [ -n "$resolved_url" ]; then
-        tunnel_url="${resolved_url%/}"
-        echo -e "  ${CHECK} Forwarded URL from gh: ${BOLD}${tunnel_url}${NC}"
+echo -e "  ${CLOCK} Waiting for n8n to be accessible through Tailscale Funnel..."
+for i in $(seq 1 60); do
+    http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null || echo "000")
+    echo -n "  Attempt $i: HTTP $http_status"
+    if [ "$http_status" = "200" ] || [ "$http_status" = "401" ]; then
+        echo ""
+        break
     fi
-    validate_public_port || true
-else
-    # wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
-    echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
-    for i in $(seq 1 60); do
-        curl -4 -v "$tunnel_url/" || true
-        http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" "$tunnel_url/" 2>/dev/null || echo "000")
-        echo -n "  Attempt $i: HTTP $http_status"
-        if [ "$http_status" = "401" ]; then
-            break
-        fi
-        if [ "$http_status" = "200" ]; then
-            break
-        fi
-        sleep 2
-        echo -n "."
-    done
-    echo
-fi
+    sleep 2
+    echo -n "."
+done
+echo ""
 
 # ──────────────────────────────────────────────────
 #  Summary banner

@@ -389,6 +389,7 @@ docker run -d \
     -e N8N_MCP_MANAGED_BY_ENV="true" \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     -e N8N_PUSH_BACKEND="sse" \
+    -e NODE_ENV="development" \
     "$n8n_docker_image"
 
 echo -e "  ${CLOCK} Waiting for n8n to be accessible..."

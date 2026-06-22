@@ -345,6 +345,8 @@ setup_tailscale_funnel() {
         echo -e "  ${TOOL} Starting tailscaled daemon..."
         sudo tailscaled &>/tmp/tailscaled.log &
         sleep 3
+        # Grant current user access to the socket so tailscale CLI works without sudo
+        sudo chmod a+rw /var/run/tailscale/tailscaled.sock 2>/dev/null || true
     fi
 
     local backend_state
@@ -380,12 +382,15 @@ setup_tailscale_funnel() {
         exit 1
     fi
 
+    tunnel_url="https://${dns_name}"
+    echo -e "  ${CHECK} Tailscale hostname: ${BOLD}${tunnel_url}${NC}"
+}
+
+start_tailscale_funnel() {
     echo -e "  ${GLOBE} Enabling Tailscale Funnel on port ${n8n_docker_port}..."
     nohup tailscale funnel "${n8n_docker_port}" >/tmp/tailscale-funnel.log 2>&1 &
     disown
     sleep 2
-
-    tunnel_url="https://${dns_name}"
     echo -e "  ${CHECK} Tailscale Funnel active: ${BOLD}${tunnel_url}${NC}"
 }
 
@@ -548,11 +553,15 @@ docker run -d \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
 
+start_tailscale_funnel
+
 echo -e "  ${CLOCK} Waiting for n8n to be accessible through Tailscale Funnel..."
+n8n_accessible=false
 for i in $(seq 1 60); do
     http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" --max-time 10 "$tunnel_url/" 2>/dev/null || echo "000")
     echo -n "  Attempt $i: HTTP $http_status"
     if [ "$http_status" = "200" ] || [ "$http_status" = "401" ]; then
+        n8n_accessible=true
         echo ""
         break
     fi
@@ -560,6 +569,12 @@ for i in $(seq 1 60); do
     echo -n "."
 done
 echo ""
+
+if [ "$n8n_accessible" != "true" ]; then
+    echo -e "  ${WARN} n8n did not become accessible through Tailscale Funnel within the timeout."
+    echo -e "  ${INFO} Container logs: docker logs $docker_container_name"
+    echo -e "  ${INFO} Funnel log:      /tmp/tailscale-funnel.log"
+fi
 
 # ──────────────────────────────────────────────────
 #  Summary banner

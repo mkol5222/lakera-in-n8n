@@ -417,6 +417,21 @@ setup_tailscale_funnel() {
     # work without sudo (tailscale itself recommends this when access is denied).
     sudo tailscale set --operator="$(id -un)"
 
+    # Verify the device is actually visible in the tailnet (may need admin approval).
+    local self_online
+    self_online=$(tailscale status --json 2>/dev/null \
+        | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write(String(JSON.parse(d).Self.Online||false)); }catch(e){ process.stdout.write('false'); } })" 2>/dev/null || echo "false")
+
+    if [ "$self_online" != "true" ]; then
+        echo -e "  ${WARN} This device is connected but not yet visible on your tailnet."
+        echo -e "  ${INFO} If your tailnet requires device approval, visit:"
+        echo -e "        ${BOLD}https://login.tailscale.com/admin/machines${NC}"
+        echo -e "       Approve this device, then press ${BOLD}Enter${NC} to continue, or Ctrl+C to abort."
+        read -r
+    else
+        echo -e "  ${CHECK} Device is registered and online in the tailnet."
+    fi
+
     local dns_name
     dns_name=$(tailscale status --json 2>/dev/null \
         | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write((JSON.parse(d).Self.DNSName||'').replace(/\\.$/,'')); }catch(e){} })" 2>/dev/null || echo "")

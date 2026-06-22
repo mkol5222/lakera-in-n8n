@@ -368,10 +368,41 @@ setup_tailscale_funnel() {
         echo -e ""
         tailscale up
         echo -e ""
+
+        # tailscale up exits after auth, but the device might still need admin approval.
+        # Poll until BackendState reaches Running before continuing.
+        local post_state=""
+        local approval_msg_shown=false
+        for attempt in $(seq 1 40); do
+            post_state=$(tailscale status --json 2>/dev/null \
+                | node -e "process.stdin.setEncoding('utf8'); let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{ try{ process.stdout.write(JSON.parse(d).BackendState||''); }catch(e){} })" 2>/dev/null || echo "")
+            if [ "$post_state" = "Running" ]; then
+                break
+            fi
+            if [ "$approval_msg_shown" = "false" ]; then
+                echo -e "  ${CLOCK} Waiting for device to be authorised..."
+                echo -e "  ${INFO} If your tailnet requires device approval, visit:"
+                echo -e "    ${BOLD}https://login.tailscale.com/admin/machines${NC}"
+                echo -e "    and authorise this machine, then wait here."
+                approval_msg_shown=true
+            fi
+            sleep 3
+        done
+
+        if [ "$post_state" != "Running" ]; then
+            echo -e "  ${CROSS} Tailscale did not reach Running state (currently: ${post_state:-unknown})."
+            echo -e "  ${INFO} Authorise this device at https://login.tailscale.com/admin/machines"
+            exit 1
+        fi
+
         echo -e "  ${CHECK} Tailscale connected!"
     else
         echo -e "  ${CHECK} Tailscale already connected."
     fi
+
+    # Make the current user a Tailscale operator so funnel/serve commands
+    # work without sudo (tailscale itself recommends this when access is denied).
+    sudo tailscale set --operator="$(id -un)"
 
     local dns_name
     dns_name=$(tailscale status --json 2>/dev/null \
@@ -388,10 +419,68 @@ setup_tailscale_funnel() {
 
 start_tailscale_funnel() {
     echo -e "  ${GLOBE} Enabling Tailscale Funnel on port ${n8n_docker_port}..."
-    nohup tailscale funnel "${n8n_docker_port}" >/tmp/tailscale-funnel.log 2>&1 &
-    disown
-    sleep 2
-    echo -e "  ${CHECK} Tailscale Funnel active: ${BOLD}${tunnel_url}${NC}"
+
+    _try_funnel() {
+        tailscale funnel --bg "${n8n_docker_port}" >"$1" 2>&1
+    }
+
+    local funnel_log=/tmp/tailscale-funnel.log
+    if ! _try_funnel "$funnel_log"; then
+        echo -e "  ${WARN} Tailscale Funnel failed to enable:"
+        while IFS= read -r line; do echo "    $line"; done < "$funnel_log"
+        echo ""
+        echo -e "  ${INFO} To enable Funnel for your tailnet:"
+        echo -e "        1. Visit ${BOLD}https://login.tailscale.com/admin/dns${NC}"
+        echo -e "           Enable ${BOLD}HTTPS Certificates${NC} and ${BOLD}Funnel${NC}."
+        echo -e "        2. Press ${BOLD}Enter${NC} to retry, or Ctrl+C to abort."
+        read -r
+        if ! _try_funnel "$funnel_log"; then
+            echo -e "  ${CROSS} Tailscale Funnel still failed:"
+            while IFS= read -r line; do echo "    $line"; done < "$funnel_log"
+            exit 1
+        fi
+    fi
+
+    local funnel_status
+    funnel_status=$(tailscale funnel status 2>/dev/null || echo "")
+    if echo "$funnel_status" | grep -qi "no serve config\|no config"; then
+        echo -e "  ${WARN} Funnel command reported success but serve config is empty."
+        echo -e "  ${INFO} Check Funnel settings at https://login.tailscale.com/admin/dns"
+    else
+        echo -e "  ${CHECK} Tailscale Funnel active: ${BOLD}${tunnel_url}${NC}"
+    fi
+}
+
+probe_ts_net_dns() {
+    local host="${tunnel_url#https://}"
+    echo -e "  ${GLOBE} Checking public DNS for ${BOLD}${host}${NC}..."
+
+    local resolved=false
+    for i in $(seq 1 10); do
+        if getent hosts "$host" >/dev/null 2>&1; then
+            resolved=true
+            break
+        fi
+        echo -n "  DNS attempt $i/10..."
+        sleep 3
+    done
+    echo ""
+
+    if [ "$resolved" = "true" ]; then
+        echo -e "  ${CHECK} ${host} resolves OK — no DNS_PROBE_POSSIBLE."
+        return 0
+    fi
+
+    echo -e "  ${WARN} ${host} is not resolving yet."
+    echo -e "  ${INFO} Browser will show DNS_PROBE_POSSIBLE until this is fixed."
+    echo -e "  ${INFO} Common causes:"
+    echo -e "        • Funnel or HTTPS Certificates not enabled:"
+    echo -e "          ${BOLD}https://login.tailscale.com/admin/dns${NC}"
+    echo -e "        • Device not yet approved:"
+    echo -e "          ${BOLD}https://login.tailscale.com/admin/machines${NC}"
+    echo -e "        • DNS propagation still in progress (wait 30–60 s)."
+    echo -e "  ${INFO} Press ${BOLD}Enter${NC} once fixed to continue, or Ctrl+C to abort."
+    read -r
 }
 
 ensure_node_with_nvm
@@ -423,7 +512,7 @@ cleanup() {
     echo -e "  ${BROOM} Cleaning up..."
     docker stop "$docker_container_name" >/dev/null 2>&1 || true
     docker rm "$docker_container_name" >/dev/null 2>&1 || true
-    pkill -f "tailscale funnel" >/dev/null 2>&1 || true
+    tailscale funnel reset >/dev/null 2>&1 || true
     echo -e "  ${CHECK} Cleanup complete."
 }
 
@@ -558,6 +647,7 @@ docker run -d \
     "$n8n_docker_image"
 
 start_tailscale_funnel
+probe_ts_net_dns
 
 echo -e "  ${CLOCK} Waiting for n8n to be accessible through Tailscale Funnel..."
 n8n_accessible=false

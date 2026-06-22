@@ -3,7 +3,7 @@
   "mcp": {
     "n8n-mcp": {
       "type": "remote",
-      "url": "https://borders-luck-dependent-glen.trycloudflare.com/mcp-server/http",
+      "url": "https://phones-laboratories-sql-consensus.trycloudflare.com/mcp-server/http",
       "oauth": {}
     }
   }

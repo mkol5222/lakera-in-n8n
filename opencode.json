@@ -3,7 +3,7 @@
   "mcp": {
     "n8n-mcp": {
       "type": "remote",
-      "url": "https://phones-laboratories-sql-consensus.trycloudflare.com/mcp-server/http",
+      "url": "https://cottage-bug-documented-jacket.trycloudflare.com/mcp-server/http",
       "oauth": {}
     }
   }

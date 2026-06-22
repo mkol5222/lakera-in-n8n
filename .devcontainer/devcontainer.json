@@ -6,9 +6,12 @@
 		"ghcr.io/devcontainers/features/github-cli:1.1.0": {}
 	},
 	"postStartCommand": "mkdir -p .logs && (bash /workspaces/lakera-in-n8n/start-n8n.sh | tee -a .logs/setup.log) ",
+	"forwardPorts": [5678],
 	"portsAttributes": {
 		"5678": {
-			"onAutoForward": "ignore"
+			"label": "n8n",
+			"onAutoForward": "notify",
+			"visibility": "public"
 		}
 	}
 }

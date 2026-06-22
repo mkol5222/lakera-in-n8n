@@ -1,6 +1,33 @@
 #!/bin/bash
 set -e
 
+# ──────────────────────────────────────────────────
+#  Environment guard
+#  This script provisions a Linux dev environment: it
+#  runs sudo sysctl/apt, rewrites /etc/resolv.conf and
+#  drives Docker. Running it on a host (e.g. macOS) is
+#  unsafe, so refuse unless we are inside a Linux dev
+#  container or GitHub Codespace.
+# ──────────────────────────────────────────────────
+require_devcontainer_environment() {
+    local os
+    os="$(uname -s)"
+    if [ "$os" != "Linux" ]; then
+        echo "❌ start-n8n.sh must run on Linux inside a dev container or GitHub Codespace (detected: $os)."
+        echo "   Open this repo in a Dev Container ('Reopen in Container') or a Codespace and let postStartCommand run it."
+        exit 1
+    fi
+    if [ "${CODESPACES:-}" = "true" ] || [ "${REMOTE_CONTAINERS:-}" = "true" ] \
+        || [ "${DEVCONTAINER:-}" = "true" ] || [ -f /.dockerenv ] || [ -d /workspaces ]; then
+        return
+    fi
+    echo "❌ start-n8n.sh must run inside a dev container or GitHub Codespace, not directly on the host."
+    echo "   Reopen this repo in a Dev Container ('Reopen in Container') or open it in a Codespace."
+    exit 1
+}
+
+require_devcontainer_environment
+
 docker_container_name="n8n-cloudflared"
 cloudflared_log_level="info"
 n8n_docker_image="n8nio/n8n"
@@ -339,24 +366,87 @@ install_tmux() {
     echo -e "  ${CHECK} tmux installed successfully."
 }
 
-if command -v cloudflared &> /dev/null; then
-    cloudflared_bin="cloudflared"
+# ──────────────────────────────────────────────────
+#  Public URL strategy
+#  Primary:  GitHub Codespaces public forwarded port.
+#  Fallback: cloudflared tunnel (local development only).
+# ──────────────────────────────────────────────────
+if [ "${CODESPACES:-}" = "true" ] && [ -n "${CODESPACE_NAME:-}" ]; then
+    use_codespace_port=true
+    forwarding_domain="${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-app.github.dev}"
+    echo -e "  ${GLOBE} GitHub Codespaces detected — using the public forwarded port as the primary public URL."
 else
-    install_cloudflared
+    use_codespace_port=false
+    echo -e "  ${INFO} Not in Codespaces — using cloudflared tunnel for the public URL."
 fi
 
-# ---- Ensure tmux is installed ----
-if command -v tmux &> /dev/null; then
-    echo -e "  ${CHECK} tmux is available."
-else
-    install_tmux
-fi
+# Make the forwarded codespace port publicly reachable (no GitHub auth).
+expose_codespace_port() {
+    echo -e "  ${GLOBE} Setting port ${n8n_docker_port} visibility to public via gh CLI..."
+    if ! command -v gh &> /dev/null; then
+        echo -e "  ${WARN} gh CLI not found — cannot set port visibility automatically."
+        return 1
+    fi
+    # The port must be forwarded (container listening) before its
+    # visibility can be changed; retry while the agent detects it.
+    local i
+    for i in $(seq 1 30); do
+        if gh codespace ports visibility "${n8n_docker_port}:public" -c "$CODESPACE_NAME" >/dev/null 2>&1; then
+            echo -e "  ${CHECK} Port ${n8n_docker_port} is now public."
+            return 0
+        fi
+        sleep 2
+    done
+    echo -e "  ${WARN} Could not set port visibility via gh CLI (token may lack the 'codespace' scope)."
+    echo -e "  ${INFO} Set it manually: ${BOLD}gh codespace ports visibility ${n8n_docker_port}:public -c \$CODESPACE_NAME${NC}"
+    echo -e "  ${INFO} or in the VS Code PORTS tab: right-click the port → Port Visibility → Public."
+    return 1
+}
 
-# ---- Kill existing tmux session 'tun' if present ----
-if tmux has-session -t tun 2>/dev/null; then
-    echo -e "  ${TOOL} Killing existing tmux session 'tun'..."
-    tmux kill-session -t tun
-    sleep 1
+# Confirm the public URL is reachable without an auth popup. A public port
+# reaches n8n directly (HTTP 200); a still-private port is intercepted by
+# GitHub's gateway with a redirect/auth challenge before reaching n8n.
+validate_public_port() {
+    echo -e "  ${CLOCK} Validating ${tunnel_url} is reachable without authentication..."
+    local i http_code
+    for i in $(seq 1 30); do
+        http_code=$(curl -4 -s -o /dev/null -w '%{http_code}' --max-time 15 "$tunnel_url/" 2>/dev/null || echo "000")
+        if [ "$http_code" = "200" ]; then
+            echo -e "  ${CHECK} Public URL reachable without authentication (HTTP ${http_code})."
+            return 0
+        fi
+        echo -n "."
+        sleep 2
+    done
+    echo
+    echo -e "  ${WARN} Public URL returned HTTP ${http_code} — it may still require GitHub authentication."
+    echo -e "  ${INFO} Verify port ${n8n_docker_port} visibility is Public in the PORTS tab."
+    return 1
+}
+
+if [ "$use_codespace_port" = true ]; then
+    echo -e "  ${INFO} Skipping cloudflared/tmux setup (only used as the local fallback)."
+else
+    # ---- Ensure cloudflared is installed (local fallback) ----
+    if command -v cloudflared &> /dev/null; then
+        cloudflared_bin="cloudflared"
+    else
+        install_cloudflared
+    fi
+
+    # ---- Ensure tmux is installed ----
+    if command -v tmux &> /dev/null; then
+        echo -e "  ${CHECK} tmux is available."
+    else
+        install_tmux
+    fi
+
+    # ---- Kill existing tmux session 'tun' if present ----
+    if tmux has-session -t tun 2>/dev/null; then
+        echo -e "  ${TOOL} Killing existing tmux session 'tun'..."
+        tmux kill-session -t tun
+        sleep 1
+    fi
 fi
 
 ensure_node_with_nvm
@@ -489,33 +579,41 @@ fi
 
 ensure_n8n_owner_password_hash
 
-echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
-script_dir="$(cd "$(dirname "$0")" && pwd)"
-tmux new-session -d -s tun -x 200 "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
+if [ "$use_codespace_port" = true ]; then
+    # Deterministic public URL for the forwarded port. Used for the n8n
+    # container env (must be known before the container starts); the real
+    # browseUrl is resolved from gh once the port is forwarded (below).
+    tunnel_url="https://${CODESPACE_NAME}-${n8n_docker_port}.${forwarding_domain}"
+    echo -e "  ${CHECK} Codespaces public URL: ${BOLD}${tunnel_url}${NC}"
+else
+    echo -e "  ${GLOBE} Starting Cloudflare tunnel in tmux session 'tun'..."
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    tmux new-session -d -s tun -x 200 "bash -c 'cd \"$script_dir\" && exec $cloudflared_bin tunnel --url http://localhost:$n8n_docker_port --loglevel $cloudflared_log_level'"
 
-tunnel_url=""
-echo -e "  ${CLOCK} Waiting for tunnel URL..."
-for i in $(seq 1 30); do
-    # Bail if tmux session died
-    if ! tmux has-session -t tun 2>/dev/null; then
-        echo -e "\n  ${CROSS} tmux session 'tun' died unexpectedly. Logs:"
+    tunnel_url=""
+    echo -e "  ${CLOCK} Waiting for tunnel URL..."
+    for i in $(seq 1 30); do
+        # Bail if tmux session died
+        if ! tmux has-session -t tun 2>/dev/null; then
+            echo -e "\n  ${CROSS} tmux session 'tun' died unexpectedly. Logs:"
+            tmux capture-pane -t tun -p -S -
+            exit 1
+        fi
+        tunnel_url=$(tmux capture-pane -t tun -p -S - | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' | head -1)
+        if [ -n "$tunnel_url" ]; then
+            break
+        fi
+        sleep 1
+    done
+
+    if [ -z "$tunnel_url" ]; then
+        echo -e "\n  ${CROSS} Failed to obtain tunnel URL within 30s. Logs:"
         tmux capture-pane -t tun -p -S -
         exit 1
     fi
-    tunnel_url=$(tmux capture-pane -t tun -p -S - | grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' | head -1)
-    if [ -n "$tunnel_url" ]; then
-        break
-    fi
-    sleep 1
-done
 
-if [ -z "$tunnel_url" ]; then
-    echo -e "\n  ${CROSS} Failed to obtain tunnel URL within 30s. Logs:"
-    tmux capture-pane -t tun -p -S -
-    exit 1
+    echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
 fi
-
-echo -e "  ${CHECK} Tunnel URL: ${BOLD}${tunnel_url}${NC}"
 
 # ---- Wait for tunnel DNS + connectivity (any HTTP response proves it's reachable) ----
 # echo -e "  ${CLOCK} Waiting for tunnel to be reachable (DNS + HTTP)..."
@@ -572,22 +670,36 @@ docker run -d \
     -e N8N_MCP_ACCESS_ENABLED="true" \
     "$n8n_docker_image"
 
-# wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
-echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
-for i in $(seq 1 60); do
-    curl -4 -v "$tunnel_url/" || true
-    http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" "$tunnel_url/" 2>/dev/null || echo "000")
-    echo -n "  Attempt $i: HTTP $http_status"
-    if [ "$http_status" = "401" ]; then
-        break
+if [ "$use_codespace_port" = true ]; then
+    # Make the now-listening forwarded port public, then prefer the real
+    # browseUrl reported by gh over the hand-built URL.
+    expose_codespace_port || true
+    resolved_url=$(gh codespace ports -c "$CODESPACE_NAME" \
+        --json sourcePort,browseUrl \
+        --jq ".[] | select(.sourcePort == ${n8n_docker_port}) | .browseUrl" 2>/dev/null | head -1)
+    if [ -n "$resolved_url" ]; then
+        tunnel_url="${resolved_url%/}"
+        echo -e "  ${CHECK} Forwarded URL from gh: ${BOLD}${tunnel_url}${NC}"
     fi
-    if [ "$http_status" = "200" ]; then
-        break
-    fi
-    sleep 2
-    echo -n "."
-done
-echo
+    validate_public_port || true
+else
+    # wait for /rest/login on Argo Tunnel to be NOT code 530 - e.g. 401 is OK
+    echo -e "  ${CLOCK} Waiting for n8n to be accessible through the tunnel..."
+    for i in $(seq 1 60); do
+        curl -4 -v "$tunnel_url/" || true
+        http_status=$(curl -4 -o /dev/null -s -w "%{http_code}" "$tunnel_url/" 2>/dev/null || echo "000")
+        echo -n "  Attempt $i: HTTP $http_status"
+        if [ "$http_status" = "401" ]; then
+            break
+        fi
+        if [ "$http_status" = "200" ]; then
+            break
+        fi
+        sleep 2
+        echo -n "."
+    done
+    echo
+fi
 
 # ──────────────────────────────────────────────────
 #  Summary banner

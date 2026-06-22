@@ -520,6 +520,10 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+echo -e "  ${DOWNLOAD} Pulling n8n Docker image (${n8n_docker_image})..."
+docker pull "$n8n_docker_image"
+echo -e "  ${CHECK} n8n image ready."
+
 ensure_n8n_owner_password_hash
 
 setup_tailscale_funnel
